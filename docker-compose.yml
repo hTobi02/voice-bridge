@@ -1,0 +1,11 @@
+services:
+  voice-bridge:
+    image: htobi02/voice-bridge
+    build: .
+    restart: unless-stopped
+    environment:
+      DISCORD_TOKEN: "TOKEN"
+      TEAMSPEAK_SERVER: "ts.example.com:9987"
+      TEAMSPEAK_IDENTITY: "Identity String"
+      TEAMSPEAK_CHANNEL_NAME: "Discord Bridge"
+      TEAMSPEAK_NAME: "Discord Bridge"
