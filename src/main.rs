@@ -71,9 +71,9 @@ impl MediaSource for TsToDiscordPipeline {
 }
 
 impl TsToDiscordPipeline {
-    pub fn new(logger: Logger) -> Self {
+    pub fn new(_logger: Logger) -> Self {
         Self {
-            data: Arc::new(std::sync::Mutex::new(TsAudioHandler::new(logger))),
+            data: Arc::new(std::sync::Mutex::new(TsAudioHandler::new())),
         }
     }
 }

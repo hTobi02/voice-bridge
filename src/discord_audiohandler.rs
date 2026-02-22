@@ -17,9 +17,9 @@ use std::fmt::Debug;
 use std::hash::Hash;
 
 use audiopus::coder::Decoder;
-use audiopus::{ packet, Channels, SampleRate };
+use audiopus::{ packet, Channels, SampleRate, MutSignals };
+use audiopus::packet::Packet;
 use slog::{ Logger, debug, info, o, trace, warn };
-use tsclientlib::audio::Error;
 
 use crate::ClientId;
 
@@ -45,6 +45,28 @@ const SPEED_CHANGE_STEPS: usize = 100;
 const USUAL_FRAME_SIZE: usize = 48000 / 50;
 
 type Result<T> = std::result::Result<T, Error>;
+
+#[derive(Debug)]
+pub enum Error {
+    GetPacketSample(audiopus::Error),
+    CreateDecoder(audiopus::Error),
+    Decode {
+        error: audiopus::Error,
+        packet: Option<Vec<u8>>,
+    },
+    TooManySamples,
+    QueueFull,
+    TooLate { wanted: u16, got: u16 },
+    Duplicate(u16),
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl std::error::Error for Error {}
 
 #[derive(Clone, Debug)]
 struct SlidingWindowMinimum<T: Copy + Default + Ord> {
@@ -154,9 +176,8 @@ impl<T: Copy + Default + Ord> SlidingWindowMinimum<T> {
 
 impl AudioQueue {
     fn new(logger: Logger, sequence: u16, packet: Vec<u8>) -> Result<Self> {
-        let last_packet_samples = packet
-            ::nb_samples(&packet, SAMPLE_RATE)
-            .map_err(Error::GetPacketSample)?;
+        let pkt: Packet<'_> = packet.as_slice().try_into().map_err(Error::GetPacketSample)?;
+        let last_packet_samples = packet::nb_samples(pkt, SAMPLE_RATE).map_err(Error::GetPacketSample)?;
         if last_packet_samples > MAX_BUFFER_SIZE {
             return Err(Error::TooManySamples);
         }
@@ -210,7 +231,8 @@ impl AudioQueue {
             // End of stream
             samples = 0;
         } else {
-            samples = packet::nb_samples(&packet, SAMPLE_RATE).map_err(Error::GetPacketSample)?;
+            let pkt: Packet<'_> = packet.as_slice().try_into().map_err(Error::GetPacketSample)?;
+            samples = packet::nb_samples(pkt, SAMPLE_RATE).map_err(Error::GetPacketSample)?;
             if samples > MAX_BUFFER_SIZE {
                 return Err(Error::TooManySamples);
             }
@@ -272,8 +294,25 @@ impl AudioQueue {
         self.packet_loss_num += 1;
 
         self.decoded_buffer.resize(self.decoded_pos + len * CHANNEL_NUM, 0.0);
-        let len = self.decoder
-            .decode_float(packet_data.as_deref(), &mut self.decoded_buffer[self.decoded_pos..], fec)
+        // Convert optional packet bytes into an Opus Packet
+        let opus_packet: Option<Packet<'_>> = match packet_data {
+            Some(bytes) => Some(bytes.as_slice().try_into().map_err(|e| Error::Decode {
+                error: e,
+                packet: packet.map(|p| p.packet.to_owned()),
+            })?),
+            None => None,
+        };
+
+        // Convert output slice into MutSignals
+        let mut out: MutSignals<'_, f32> =
+            (&mut self.decoded_buffer[self.decoded_pos..]).try_into().map_err(|e| Error::Decode {
+                error: e,
+                packet: packet.map(|p| p.packet.to_owned()),
+            })?;
+
+        let len = self
+            .decoder
+            .decode_float(opus_packet, out, fec)
             .map_err(|e| Error::Decode {
                 error: e,
                 packet: packet.map(|p| p.packet.to_owned()),
